@@ -1,0 +1,178 @@
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, PermissionFlagsBits } = require('discord.js');
+const express = require('express');
+const fs = require('fs');
+
+// --- 1. خادم ويب لإبقاء البوت شغالاً 24/7 ---
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('9R System Bot is Online & Running 24/7!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Web server listening on port ${PORT}`);
+});
+
+// --- 2. إعدادات البوت الأساسية ---
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+    ]
+});
+
+// --- 3. إعدادات البيانات والمراتب ---
+const DATA_FILE = './admin_data.json';
+
+function loadData() {
+    if (!fs.existsSync(DATA_FILE)) {
+        fs.writeFileSync(DATA_FILE, JSON.stringify({ points: {}, messages: {} }));
+    }
+    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+}
+
+function saveData() {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+}
+
+let db = loadData();
+
+// قائمة الرتب والنقاط المطلوبة
+const RANKS = [
+    { points: 10, roleId: 'الرتبة_1' },
+    { points: 25, roleId: 'الرتبة_2' },
+    { points: 50, roleId: 'الرتبة_3' }
+];
+
+// --- 4. الأحداث الأساسية ---
+client.once('ready', () => {
+    console.log(`✅ تم تشغيل البوت بنجاح باسم: ${client.user.tag}`);
+});
+
+// الأوامر والتفاعلات
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+
+    const args = message.content.trim().split(/ +/);
+    const command = args[0];
+
+    // أمر قائمة الرتب الذاتية
+    if (command === 'رتب' || command === 'roles') {
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId('select_roles_menu')
+            .setPlaceholder('اختر الرتب التي تريدها...')
+            .setMinValues(0)
+            .setMaxValues(3)
+            .addOptions(
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('عضو مميز')
+                    .setValue('ROLE_ID_1')
+                    .setDescription('الحصول على رتبة عضو مميز في السيرفر'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('لاعب فوتبول')
+                    .setValue('ROLE_ID_2')
+                    .setDescription('رتبة عشاق كرة القدم'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('إشعارات السيرفر')
+                    .setValue('ROLE_ID_3')
+                    .setDescription('لتلقي أهم الإشعارات والأخبار')
+            );
+
+        const row = new ActionRowBuilder().addComponents(selectMenu);
+
+        return message.reply({
+            content: '📌 **قائمة اختيار الرتب الذاتية:**',
+            components: [row]
+        });
+    }
+
+    // أمر إعطاء نقاط
+    if (command === 'عط' || command === 'اعطاء') {
+        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+        const target = message.mentions.members.first();
+        const pointsToAdd = parseInt(args[2]);
+
+        if (!target || isNaN(pointsToAdd)) return message.reply('❌ الاستخدام الصحيح: `عط @العضو 10`');
+
+        db.points[target.id] = (db.points[target.id] || 0) + pointsToAdd;
+        saveData();
+
+        await checkAndAssignRanks(message.guild, target, db.points[target.id]);
+        return message.reply(`✅ تم إعطاء **${pointsToAdd}** نقطة لـ ${target.user.username}. مجموع نقاطه الآن: **${db.points[target.id]}**`);
+    }
+
+    // أمر خصم نقاط
+    if (command === 'خصم') {
+        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+        const target = message.mentions.members.first();
+        const pointsToDeduct = parseInt(args[2]);
+
+        if (!target || isNaN(pointsToDeduct)) return message.reply('❌ الاستخدام الصحيح: `خصم @العضو 5`');
+
+        db.points[target.id] = Math.max(0, (db.points[target.id] || 0) - pointsToDeduct);
+        saveData();
+
+        return message.reply(`🔻 تم خصم **${pointsToDeduct}** نقطة من ${target.user.username}. المتبقي: **${db.points[target.id]}**`);
+    }
+
+    // أمر التوب (الأعلى نقاطاً)
+    if (command === 'توب' || command === 'top') {
+        const sorted = Object.entries(db.points)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 10);
+
+        if (sorted.length === 0) return message.reply('لا توجد نقاط مسجلة بعد.');
+
+        const leaderBoard = sorted.map(([id, pts], index) => `${index + 1}. <@${id}> - **${pts}** نقطة`).join('\n');
+        const embed = new EmbedBuilder()
+            .setTitle('🏆 قائمة أعلى الأعضاء نقاطاً')
+            .setDescription(leaderBoard)
+            .setColor('#0099ff');
+
+        return message.reply({ embeds: [embed] });
+    }
+
+    // أمر تصفير النقاط
+    if (command === 'رست') {
+        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+        db.points = {};
+        db.messages = {};
+        saveData();
+        return message.reply('🔄 تم إعادة ضبط وتصفير جميع النقاط بنجاح.');
+    }
+});
+
+// التفاعل مع قائمة الاختيار
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    if (interaction.customId === 'select_roles_menu') {
+        const selectedRoles = interaction.values;
+        await interaction.deferReply({ ephemeral: true });
+
+        return interaction.editReply({
+            content: `✅ تم تحديث رتبك بنجاح!`
+        });
+    }
+});
+
+// دالة ترقية الرتب تلقائياً
+async function checkAndAssignRanks(guild, member, currentPoints) {
+    for (const rank of RANKS) {
+        if (currentPoints >= rank.points && rank.roleId !== 'الرتبة_1') {
+            const role = guild.roles.cache.get(rank.roleId);
+            if (role && !member.roles.cache.has(role.id)) {
+                try {
+                    await member.roles.add(role);
+                    member.send(`🎉 مبروك! وصلت إلى **${currentPoints}** نقطة ونلت رتبة **${role.name}**!`);
+                } catch (e) {}
+            }
+        }
+    }
+}
+
+// --- 5. تسجيل الدخول بالتوكن الخاص بك ---
+client.login('MTU1ODA1MjkyMDMzODAyNjUzNg.GOzzgk.PBQleYXtSl5x_giJxcLFCfeI-Rk7PhXTAB9JGY');
